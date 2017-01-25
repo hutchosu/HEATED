@@ -1,5 +1,7 @@
 /*
- * Methods:
+ * Any comments which begin with *** are debug commands.
+ * 
+ * Custom functions:
  *  void convertGPS() --- convert date, time, lat, long to desired format
  *  void dweetData() --- send data via dweet.io protocol (compiles data into URL address, which is then called by GSM board; data can be retrieved using a "listening" URL address)
  */
@@ -13,12 +15,20 @@
 #define FONA_RST 4
 #define ONE_WIRE_BUS 34
 
-// Starts the software serial connection so the Arduino can communicate with the FONA board
+// We default to using software serial. If you want to use hardware serial
+// (because softserial isnt supported) comment out the following three lines 
+// and uncomment the HardwareSerial line
 #include <SoftwareSerial.h>
 SoftwareSerial fonaSS = SoftwareSerial(FONA_TX, FONA_RX);
 SoftwareSerial *fonaSerial = &fonaSS;
 
+// Hardware serial is also possible!
+//  HardwareSerial *fonaSerial = &Serial1;
+
 Adafruit_FONA fona = Adafruit_FONA(FONA_RST);
+
+// Have a FONA 3G? use this object type instead
+//Adafruit_FONA_3G fona = Adafruit_FONA_3G(FONA_RST);
 
 // Setup a oneWire instance to communicate with any OneWire devices
 OneWire oneWire(ONE_WIRE_BUS);
@@ -30,18 +40,20 @@ DeviceAddress thermo1 = { 0x28, 0xFF, 0x59, 0x69, 0x56, 0x16, 0x04, 0xA0 };
 DeviceAddress thermo2 = { 0x28, 0xFF, 0xA0, 0x41, 0x53, 0x16, 0x03, 0x2F };
 DeviceAddress thermo3 = { 0x28, 0xFF, 0x0B, 0x41, 0x53, 0x16, 0x03, 0x6C };
 
-// Data variables
-float GSM_date = 0;
-float GSM_time = 0;
-float latitude = 0;
-float longitude = 0;
-float altitude = 0;
-float temp_c = 0;
-float temp_f = 0;
-float rel_humidity = 0;
 float adcValue = 0;
 float voltage = 0;
 float percentRH = 0;
+
+int dweetDelay = 0;
+int totalPointsPerDweet = 4;
+
+
+// Data variables
+float latitude[5] = {0,0,0,0,0};
+float longitude[5] = {0,0,0,0,0};
+float altitude[5] = {0,0,0,0,0};
+float temp_c[5] = {0,0,0,0,0};
+float rel_humidity[5] = {0,0,0,0,0};
 
 // dweet.io name - "UHI" followed by last 5 digits of GSM breakout board serial number
 String myThingName = "UHI60634";   
@@ -56,24 +68,26 @@ void setup() {
 
   fonaSerial->begin(4800);
   if (! fona.begin(*fonaSerial)) {
-    
-    //Trying to connect to FONA
+  //***  Serial.println(F("Couldn't find FONA"));
     
   }
+  //***Serial.println(F("FONA is OK"));
+  // Try to enable GPRS
   
+
+  //***Serial.println(F("Enabling GPS..."));
   while (!fona.enableGPS(true)) {
 
-    //Trying to enable GPS
+    //GPS not enabled
     
   }
 
   fona.setGPRSNetworkSettings(F("freedompop.foggmobile.com"), F(""), F(""));
   Serial.println(fona.enableGPRS(false));
   delay(3000);
-  
   while (!fona.enableGPRS(true)) {
-    
-    //Trying to enable GPRS
+
+    //GPRS not enabled
     
   }
 
@@ -83,46 +97,31 @@ void setup() {
   sensors.setResolution(thermo1, 12);
   sensors.setResolution(thermo2, 12);
   sensors.setResolution(thermo3, 12);
-
+  
 }
 
 void loop() {
-  // Fires every 10 seconds
-  delay(10000);
+  delay(5000);
+  Serial.println("delay counter = " + String(dweetDelay));
 
   float speed_kph, heading;
 
+  float tempAlt, tempLong, tempLat;
   // Retrieve position values from GSM board - speed_kph, heading are not currently used
-  boolean gps_success = fona.getGPS(&latitude, &longitude, &speed_kph, &heading, &altitude);
+  boolean gps_success = fona.getGPS(&tempLat, &tempLong, &speed_kph, &heading, &tempAlt);
+  longitude[dweetDelay] = tempLong;
+  latitude[dweetDelay] = tempLat;
+  altitude[dweetDelay] = tempAlt;
 
   tempRead();
   humRead();
 
-  // TODO: retrieve date and time from GSM board
+  dweetDelay++;
+  
 
-  if (gps_success) {
-
-    dweetData();
-    
-//    Serial.print("GPS lat:");
-//    Serial.println(latitude, 6);
-//    Serial.print("GPS long:");
-//    Serial.println(longitude, 6);
-//    Serial.print("GPS speed KPH:");
-//    Serial.println(speed_kph);
-//    Serial.print("GPS heading:");
-//    Serial.println(heading);
-//    Serial.print("GPS altitude:");
-//    Serial.println(altitude);
-//    Serial.print("C temp: ");
-//    Serial.println(temp_c);
-//    Serial.print("F temp" ");
-//    Serial.println(temp_f);
-//    Serial.print("Humidity: ");
-//    Serial.println(rel_humidity);
-
-  } else {
-//    //***Serial.println("Waiting for FONA GPS 3D fix...");
+  if (dweetDelay == totalPointsPerDweet) {
+  dweetData();
+  dweetDelay = 0;
   }
 }
 
@@ -133,10 +132,9 @@ void tempRead () {
   float temp2=sensors.getTempC(thermo2);
   float temp3=sensors.getTempC(thermo3);
   float avg=(temp1+temp2+temp3)/3.0;
-  float tempf=(avg*1.8)+32;
-
-  temp_c = avg;
-  temp_f = tempf;
+ 
+  temp_c[dweetDelay] = avg;
+ 
 }
 
 void humRead () {
@@ -145,7 +143,7 @@ void humRead () {
   voltage = (adcValue/1023.0)*5.0; // Translate ADC value into a voltage value
   percentRH = (voltage-0.958)/0.0307; // Translate voltage into percent relative humidity
 
-  rel_humidity = percentRH;
+  rel_humidity[dweetDelay] = percentRH;
 }
 
 
@@ -154,32 +152,28 @@ void convertGPS() {
 }
 
 void dweetData() {
- 
 
-  //Build URL string
   String dweetURL;
-  dweetURL = "http://dweet.io/dweet/for/" + myThingName;
-  dweetURL += "?date=" + String(GSM_date);
-  dweetURL += "&time=" + String(GSM_time);
-  dweetURL += "&latidtude=" + String(latitude);
-  dweetURL += "&longitude=" + String(longitude);
-  dweetURL += "&altitude=" + String(altitude);
-  dweetURL += "&tempC=" + String(temp_c);
-  dweetURL += "&tempF=" + String(temp_f);
-  dweetURL += "&relHumid=" + String(rel_humidity);
+  dweetURL = "http://dweet.io/dweet/for/" + myThingName + "?";
+  for (int i = 0; i < totalPointsPerDweet; i++) {
+    dweetURL += "&latidtude" + String(i) + "=" + String(latitude[i]);
+    dweetURL += "&longitude" + String(i) + "=" + String(longitude[i]);
+    dweetURL += "&altitude" + String(i) + "=" + String(altitude[i]);
+    dweetURL += "&tempC" + String(i) + "=" + String(temp_c[i]);
+    dweetURL += "&relHumid" + String(i) + "=" + String(rel_humidity[i]);
+  }
+
+  Serial.println(dweetURL);
   
-  //Send URL string to char buffer; necessary for the fona.HTTP_GET function
   char buf[1000];
   dweetURL.toCharArray(buf, dweetURL.length());
 
   uint16_t statusCode;
   int16_t length;
   
-  //Call http "get" function; this calls the URL and receives data from called URL
-  //Because we are calling a dweet.io URL, our data that is in the URL will be "dweeted" and can be retrieved later 
-  if (!fona.HTTP_GET_start(buf, &statusCode, (uint16_t *)&length)) {
-    
+  if (fona.HTTP_GET_start(buf, &statusCode, (uint16_t *)&length)) {
+    Serial.println("did not dweet correctly");
   }
   fona.HTTP_GET_end();
+  Serial.println("data dweeted");
 }
-
